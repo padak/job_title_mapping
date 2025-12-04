@@ -2,6 +2,7 @@
 .env
 .venv/
 data/
+!data/standardized_job_titles_updated.csv
 
 # Python
 __pycache__/
