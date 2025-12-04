@@ -38,11 +38,53 @@ The component maps them to standardized titles:
 
 ### Supported Models
 
-| Model | Structured Outputs | Notes |
-|-------|-------------------|-------|
-| `claude-sonnet-4-5` | ✅ Yes | Recommended - fast, accurate |
-| `claude-opus-4-1` | ✅ Yes | Best quality, slower |
-| `claude-haiku-3-5-20241022` | ❌ No | Fastest, cheapest |
+| Model | Structured Outputs | Pricing (per MTok) | Notes |
+|-------|-------------------|-------------------|-------|
+| `claude-sonnet-4-5` | ✅ Yes | $3 in / $15 out | **Recommended** - best balance of speed & quality |
+| `claude-opus-4-1` | ✅ Yes | $15 in / $75 out | Best quality, slower, more expensive |
+| `claude-haiku-4-5` | ❌ No | $1 in / $5 out | Fastest, cheapest |
+| `claude-opus-4-5` | ❌ No | $5 in / $25 out | Premium quality, moderate speed |
+| `claude-haiku-3-5` | ❌ No | $0.80 in / $4 out | Legacy - fastest, very cheap |
+
+> **Note:** Structured outputs are currently in beta and only available for **Claude Sonnet 4.5** and **Claude Opus 4.1**. If you use a different model, you must set `use_structured_output` to `false` in parameters, otherwise the API call will fail.
+
+### Example Configurations
+
+**Small batches (up to ~500 records) — Real-time processing:**
+
+```json
+{
+  "#ANTHROPIC_API_KEY": "sk-ant-...",
+  "model": "claude-sonnet-4-5",
+  "batch_size": 50,
+  "use_structured_output": true,
+  "use_batch_api": false,
+  "limit": 0
+}
+```
+
+- Fast, synchronous processing
+- Results in seconds to minutes
+- Best for testing, small datasets, or real-time needs
+
+**Large batches (1,000+ records) — Batch API processing:**
+
+```json
+{
+  "#ANTHROPIC_API_KEY": "sk-ant-...",
+  "model": "claude-sonnet-4-5",
+  "batch_size": 200,
+  "use_structured_output": true,
+  "use_batch_api": true,
+  "max_requests_per_batch_job": 10,
+  "limit": 0
+}
+```
+
+- **50% cheaper** than real-time API
+- Asynchronous processing (minutes to hours depending on volume)
+- Best for bulk processing (10k+ records)
+- `max_requests_per_batch_job`: how many API requests per batch job (parallelization)
 
 ## Input Tables
 
@@ -80,11 +122,70 @@ The component maps them to standardized titles:
 ## How It Works
 
 1. Loads contacts and taxonomy from input tables
-2. Creates system prompt with taxonomy (cached after first call)
-3. Batches job titles (default: 200 per batch)
-4. Sends each batch to Claude - taxonomy is cached, only titles are sent fresh
-5. Claude returns structured JSON with best-match mappings
-6. Results are merged and written to output table
+2. Deduplicates job titles (processes only unique titles)
+3. Creates system prompt with taxonomy (cached after first call)
+4. Batches job titles (default: 200 per batch)
+5. Sends each batch to Claude - taxonomy is cached, only titles are sent fresh
+6. Claude returns structured JSON with best-match mappings
+7. Results are mapped back to all contacts and written to output table
+
+### Processing Flow
+
+```mermaid
+flowchart TD
+    subgraph Input
+        A[contact.csv] --> B[Load & Deduplicate]
+        C[taxonomy.csv] --> D[Build System Prompt]
+    end
+
+    subgraph Processing
+        B --> E{Unique Titles}
+        E --> F[Batch 1<br/>200 titles]
+        E --> G[Batch 2<br/>200 titles]
+        E --> H[Batch N<br/>...]
+
+        D --> I[System Prompt<br/>with Taxonomy]
+        I --> |Cache on first call| J[Anthropic API]
+
+        F --> J
+        G --> J
+        H --> J
+    end
+
+    subgraph Output
+        J --> K[Structured JSON<br/>Responses]
+        K --> L[Map back to<br/>all contacts]
+        L --> M[contact_taxonomy_seniority.csv]
+    end
+
+    style I fill:#e1f5fe
+    style J fill:#fff3e0
+    style M fill:#e8f5e9
+```
+
+### Batch API Mode (Optional)
+
+When `use_batch_api: true`, the component uses Anthropic's Message Batches API for 50% cost savings:
+
+```mermaid
+flowchart LR
+    subgraph Submit
+        A[Create Batch<br/>Requests] --> B[Submit to<br/>Batch API]
+    end
+
+    subgraph Process
+        B --> C[Async Processing<br/>~minutes]
+        C --> D[Poll Status]
+        D --> |not done| C
+    end
+
+    subgraph Collect
+        D --> |done| E[Retrieve Results]
+        E --> F[Parse & Merge]
+    end
+
+    style C fill:#fff3e0
+```
 
 ## Cost Estimation
 

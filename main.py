@@ -18,12 +18,13 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Models that support structured outputs
+# Models that support structured outputs (beta)
+# See: https://docs.anthropic.com/en/docs/build-with-claude/structured-outputs
 STRUCTURED_OUTPUT_MODELS = {
     "claude-sonnet-4-5",
-    "claude-sonnet-4-5-20250514",
+    "claude-sonnet-4-5-20250929",
     "claude-opus-4-1",
-    "claude-opus-4-1-20250414",
+    "claude-opus-4-1-20250805",
 }
 
 
