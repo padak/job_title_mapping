@@ -6,6 +6,7 @@ Maps raw job titles to standardized titles using Claude API.
 
 import json
 import logging
+import time
 from pathlib import Path
 
 import anthropic
@@ -228,6 +229,7 @@ def process_contacts(
     use_structured_output: bool
 ) -> tuple[pd.DataFrame, dict]:
     """Process all contacts and map their job titles."""
+    process_start = time.time()
     client = anthropic.Anthropic(api_key=api_key)
     taxonomy_ref = create_taxonomy_reference(df_taxonomy)
 
@@ -242,7 +244,7 @@ def process_contacts(
             "job_title": str(job_title).strip()
         })
 
-    logger.info(f"Processing {len(titles_to_map)} job titles in batches of {batch_size}...")
+    logger.info(f"Processing {len(titles_to_map):,} job titles in batches of {batch_size}...")
     logger.info(f"Model: {model}")
     logger.info(f"Structured outputs: {'enabled' if use_structured_output and model in STRUCTURED_OUTPUT_MODELS else 'disabled'}")
 
@@ -258,6 +260,9 @@ def process_contacts(
         "cache_read_input_tokens": 0,
     }
 
+    start_time = time.time()
+    log_interval = max(1, total_batches // 20)  # Log ~20 times during processing
+
     for i in range(0, len(titles_to_map), batch_size):
         batch = titles_to_map[i:i + batch_size]
         batch_num = i // batch_size + 1
@@ -269,8 +274,25 @@ def process_contacts(
         for key in total_usage:
             total_usage[key] += usage_stats.get(key, 0)
 
-        cache_status = "CACHE HIT" if usage_stats.get("cache_read_input_tokens", 0) > 0 else "CACHE MISS"
-        logger.info(f"  Batch {batch_num}/{total_batches} ({len(batch)} titles) - {cache_status}")
+        # Progress logging
+        if batch_num == 1 or batch_num % log_interval == 0 or batch_num == total_batches:
+            elapsed = time.time() - start_time
+            titles_done = min(batch_num * batch_size, len(titles_to_map))
+            titles_per_sec = titles_done / elapsed if elapsed > 0 else 0
+            remaining_titles = len(titles_to_map) - titles_done
+            eta_seconds = remaining_titles / titles_per_sec if titles_per_sec > 0 else 0
+            eta_min = int(eta_seconds // 60)
+            eta_sec = int(eta_seconds % 60)
+
+            cache_status = "CACHE HIT" if usage_stats.get("cache_read_input_tokens", 0) > 0 else "CACHE MISS"
+            pct = (batch_num / total_batches) * 100
+
+            logger.info(
+                f"Batch {batch_num}/{total_batches} ({pct:.0f}%) | "
+                f"{titles_done:,}/{len(titles_to_map):,} titles | "
+                f"{titles_per_sec:.1f} titles/sec | "
+                f"ETA: {eta_min}m {eta_sec}s | {cache_status}"
+            )
 
     # Create results DataFrame
     df_results = pd.DataFrame(all_results)
@@ -295,6 +317,9 @@ def process_contacts(
     # Fill missing values for contacts without job titles
     df_output["seniority"] = df_output["seniority"].fillna(-1)
 
+    # Add timing to usage stats
+    total_usage["elapsed_seconds"] = time.time() - process_start
+
     return df_output, total_usage
 
 
@@ -311,11 +336,13 @@ def main():
     model = params.get("model", "claude-sonnet-4-5")
     batch_size = int(params.get("batch_size", 100))
     use_structured_output = params.get("use_structured_output", True)
+    limit = params.get("limit", 1000)  # Limit records for testing, 0 = no limit
 
     logger.info("=== Job Title Mapping Component ===")
     logger.info(f"Model: {model}")
     logger.info(f"Batch size: {batch_size}")
     logger.info(f"Structured outputs: {use_structured_output}")
+    logger.info(f"Record limit: {limit if limit else 'unlimited'}")
 
     # Fixed input paths (Table Input Mapping)
     contacts_path = Path(ci.data_folder_path) / "in/tables/contact.csv"
@@ -330,7 +357,13 @@ def main():
     df_contacts = pd.read_csv(contacts_path, low_memory=False)
     df_taxonomy = pd.read_csv(taxonomy_path)
 
-    logger.info(f"Loaded {len(df_contacts)} contacts and {len(df_taxonomy)} taxonomy entries")
+    total_contacts = len(df_contacts)
+    logger.info(f"Loaded {total_contacts:,} contacts and {len(df_taxonomy)} taxonomy entries")
+
+    # Apply limit if set
+    if limit and limit > 0:
+        df_contacts = df_contacts.head(limit)
+        logger.info(f"Limited to {len(df_contacts):,} contacts (limit={limit})")
 
     # Process contacts
     df_output, usage_stats = process_contacts(
@@ -354,18 +387,27 @@ def main():
     logger.info(f"Results saved: {len(df_output)} contacts mapped")
     logger.info(f"Output: {output_path}")
 
-    # Log token usage summary
-    logger.info("=== Token Usage Summary ===")
+    # Log summary
+    elapsed = usage_stats.get('elapsed_seconds', 0)
+    elapsed_min = int(elapsed // 60)
+    elapsed_sec = int(elapsed % 60)
+
+    logger.info("=== Processing Summary ===")
+    logger.info(f"Total time: {elapsed_min}m {elapsed_sec}s")
+    logger.info(f"Contacts processed: {len(df_output):,}")
+    logger.info(f"Throughput: {len(df_output) / elapsed:.1f} contacts/sec" if elapsed > 0 else "N/A")
+
+    logger.info("=== Token Usage ===")
     logger.info(f"Input tokens: {usage_stats['input_tokens']:,}")
     logger.info(f"Output tokens: {usage_stats['output_tokens']:,}")
-    logger.info(f"Cache creation tokens: {usage_stats['cache_creation_input_tokens']:,}")
-    logger.info(f"Cache read tokens: {usage_stats['cache_read_input_tokens']:,}")
     total_tokens = usage_stats['input_tokens'] + usage_stats['output_tokens']
     logger.info(f"Total tokens: {total_tokens:,}")
 
-    # Calculate cache savings
+    # Cache stats
     cache_read = usage_stats['cache_read_input_tokens']
     cache_creation = usage_stats['cache_creation_input_tokens']
+    logger.info(f"Cache creation tokens: {cache_creation:,}")
+    logger.info(f"Cache read tokens: {cache_read:,}")
     if cache_read > 0:
         cache_hit_rate = (cache_read / (cache_read + cache_creation)) * 100
         logger.info(f"Cache hit rate: {cache_hit_rate:.1f}%")

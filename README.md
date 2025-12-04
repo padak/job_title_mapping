@@ -32,6 +32,7 @@ The component maps them to standardized titles:
 | `model` | No | `claude-sonnet-4-5` | Claude model to use |
 | `batch_size` | No | `100` | Titles processed per API call |
 | `use_structured_output` | No | `true` | Use structured outputs beta feature |
+| `limit` | No | `1000` | Max records to process (0 = unlimited) |
 
 ### Supported Models
 
