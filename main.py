@@ -573,6 +573,14 @@ def main():
 
     total_contacts = len(df_contacts)
     logger.info(f"Loaded {total_contacts:,} contacts and {len(df_taxonomy)} taxonomy entries")
+    logger.info(f"Contact columns: {list(df_contacts.columns)}")
+    logger.info(f"Taxonomy columns: {list(df_taxonomy.columns)}")
+
+    # Validate required columns
+    required_contact_cols = ["contact_id", "job_title", "email", "contact_type"]
+    missing_cols = [col for col in required_contact_cols if col not in df_contacts.columns]
+    if missing_cols:
+        raise ValueError(f"Missing required columns in contact.csv: {missing_cols}. Available: {list(df_contacts.columns)}")
 
     # Apply limit if set
     if limit and limit > 0:

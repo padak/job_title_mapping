@@ -33,6 +33,7 @@ The component maps them to standardized titles:
 | `batch_size` | No | `200` | Titles processed per API call |
 | `use_structured_output` | No | `true` | Use structured outputs beta feature |
 | `use_batch_api` | No | `false` | Use Message Batches API (async, 50% cheaper) |
+| `max_requests_per_batch_job` | No | `3` | Requests per batch job (only for Batch API) |
 | `limit` | No | `1000` | Max records to process (0 = unlimited) |
 
 ### Supported Models
@@ -80,14 +81,14 @@ The component maps them to standardized titles:
 
 1. Loads contacts and taxonomy from input tables
 2. Creates system prompt with taxonomy (cached after first call)
-3. Batches job titles (default: 100 per batch)
+3. Batches job titles (default: 200 per batch)
 4. Sends each batch to Claude - taxonomy is cached, only titles are sent fresh
 5. Claude returns structured JSON with best-match mappings
 6. Results are merged and written to output table
 
 ## Cost Estimation
 
-With default settings (Sonnet 4.5, batch size 100, prompt caching enabled):
+With default settings (Sonnet 4.5, batch size 200, prompt caching enabled):
 - First batch: ~$0.02 (cache creation)
 - Subsequent batches: ~$0.005 (90% savings from cache hits)
 - **~$8-12 per 143,000 titles** (vs ~$57 without caching)
