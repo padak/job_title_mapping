@@ -30,8 +30,9 @@ The component maps them to standardized titles:
 |-----------|----------|---------|-------------|
 | `#ANTHROPIC_API_KEY` | Yes | - | Anthropic API key (encrypted) |
 | `model` | No | `claude-sonnet-4-5` | Claude model to use |
-| `batch_size` | No | `100` | Titles processed per API call |
+| `batch_size` | No | `200` | Titles processed per API call |
 | `use_structured_output` | No | `true` | Use structured outputs beta feature |
+| `use_batch_api` | No | `false` | Use Message Batches API (async, 50% cheaper) |
 | `limit` | No | `1000` | Max records to process (0 = unlimited) |
 
 ### Supported Models
