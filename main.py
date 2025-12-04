@@ -77,28 +77,32 @@ def get_json_schema() -> dict:
     }
 
 
-def build_prompt(job_titles: list[dict], taxonomy_ref: str) -> str:
-    """Build the prompt for job title mapping."""
+def build_system_prompt(taxonomy_ref: str) -> str:
+    """Build the system prompt with taxonomy (cacheable)."""
+    return f"""You are a job title mapping assistant. Your task is to map raw job titles to standardized titles from a taxonomy.
+
+## Taxonomy (standardized titles with seniority and department):
+{taxonomy_ref}
+
+## Instructions:
+1. For each job title, find the BEST matching standardized title from the taxonomy above.
+2. If no good match exists (similarity < 50%), use null for standardized_job_title and -1 for seniority.
+3. Use the seniority and department values from the matched taxonomy entry.
+4. Return the results in the specified JSON format.
+
+Always return a JSON object with "mappings" array containing all mapped titles."""
+
+
+def build_user_prompt(job_titles: list[dict]) -> str:
+    """Build the user prompt with job titles (dynamic, not cached)."""
     titles_list = "\n".join([
         f"{i+1}. ID: {t['id']} | Title: {t['job_title']}"
         for i, t in enumerate(job_titles)
     ])
 
-    return f"""Map each job title to the most appropriate standardized title from our taxonomy.
+    return f"""Map these job titles to the taxonomy:
 
-## Taxonomy (standardized titles with seniority and department):
-{taxonomy_ref}
-
-## Job titles to map:
-{titles_list}
-
-## Instructions:
-1. For each job title, find the BEST matching standardized title from the taxonomy.
-2. If no good match exists (similarity < 50%), use null for standardized_job_title and -1 for seniority.
-3. Use the seniority and department values from the matched taxonomy entry.
-4. Return the results in the specified JSON format.
-
-Return a JSON object with "mappings" array containing all mapped titles."""
+{titles_list}"""
 
 
 def map_titles_with_structured_output(
@@ -106,23 +110,39 @@ def map_titles_with_structured_output(
     job_titles: list[dict],
     taxonomy_ref: str,
     model: str
-) -> list[dict]:
-    """Map titles using structured outputs (beta feature)."""
-    prompt = build_prompt(job_titles, taxonomy_ref)
+) -> tuple[list[dict], dict]:
+    """Map titles using structured outputs (beta feature) with prompt caching."""
+    system_prompt = build_system_prompt(taxonomy_ref)
+    user_prompt = build_user_prompt(job_titles)
 
     response = client.beta.messages.create(
         model=model,
         max_tokens=8192,
-        betas=["structured-outputs-2025-11-13"],
-        messages=[{"role": "user", "content": prompt}],
+        betas=["structured-outputs-2025-11-13", "prompt-caching-2024-07-31"],
+        system=[
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"}
+            }
+        ],
+        messages=[{"role": "user", "content": user_prompt}],
         output_format={
             "type": "json_schema",
             "schema": get_json_schema()
         }
     )
 
+    # Extract usage stats
+    usage_stats = {
+        "input_tokens": getattr(response.usage, "input_tokens", 0),
+        "output_tokens": getattr(response.usage, "output_tokens", 0),
+        "cache_creation_input_tokens": getattr(response.usage, "cache_creation_input_tokens", 0),
+        "cache_read_input_tokens": getattr(response.usage, "cache_read_input_tokens", 0),
+    }
+
     result = json.loads(response.content[0].text)
-    return result.get("mappings", [])
+    return result.get("mappings", []), usage_stats
 
 
 def map_titles_without_structured_output(
@@ -130,10 +150,9 @@ def map_titles_without_structured_output(
     job_titles: list[dict],
     taxonomy_ref: str,
     model: str
-) -> list[dict]:
-    """Map titles using regular JSON output (fallback for unsupported models)."""
-    prompt = build_prompt(job_titles, taxonomy_ref)
-    prompt += """
+) -> tuple[list[dict], dict]:
+    """Map titles using regular JSON output (fallback) with prompt caching."""
+    system_prompt = build_system_prompt(taxonomy_ref) + """
 
 ## Output format (JSON):
 {
@@ -144,11 +163,29 @@ def map_titles_without_structured_output(
 
 Return ONLY valid JSON, no markdown formatting or explanation."""
 
+    user_prompt = build_user_prompt(job_titles)
+
     response = client.messages.create(
         model=model,
         max_tokens=8192,
-        messages=[{"role": "user", "content": prompt}]
+        extra_headers={"anthropic-beta": "prompt-caching-2024-07-31"},
+        system=[
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"}
+            }
+        ],
+        messages=[{"role": "user", "content": user_prompt}]
     )
+
+    # Extract usage stats
+    usage_stats = {
+        "input_tokens": getattr(response.usage, "input_tokens", 0),
+        "output_tokens": getattr(response.usage, "output_tokens", 0),
+        "cache_creation_input_tokens": getattr(response.usage, "cache_creation_input_tokens", 0),
+        "cache_read_input_tokens": getattr(response.usage, "cache_read_input_tokens", 0),
+    }
 
     response_text = response.content[0].text.strip()
 
@@ -159,11 +196,11 @@ Return ONLY valid JSON, no markdown formatting or explanation."""
 
     try:
         result = json.loads(response_text)
-        return result.get("mappings", [])
+        return result.get("mappings", []), usage_stats
     except json.JSONDecodeError as e:
         logger.error(f"JSON parse error: {e}")
         logger.error(f"Response was: {response_text[:500]}")
-        return []
+        return [], usage_stats
 
 
 def map_titles_batch(
@@ -172,7 +209,7 @@ def map_titles_batch(
     taxonomy_ref: str,
     model: str,
     use_structured_output: bool
-) -> list[dict]:
+) -> tuple[list[dict], dict]:
     """Map a batch of job titles to standardized titles."""
     if use_structured_output and model in STRUCTURED_OUTPUT_MODELS:
         return map_titles_with_structured_output(client, job_titles, taxonomy_ref, model)
@@ -189,7 +226,7 @@ def process_contacts(
     model: str,
     batch_size: int,
     use_structured_output: bool
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, dict]:
     """Process all contacts and map their job titles."""
     client = anthropic.Anthropic(api_key=api_key)
     taxonomy_ref = create_taxonomy_reference(df_taxonomy)
@@ -213,20 +250,34 @@ def process_contacts(
     all_results = []
     total_batches = (len(titles_to_map) + batch_size - 1) // batch_size
 
+    # Track usage stats
+    total_usage = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
+
     for i in range(0, len(titles_to_map), batch_size):
         batch = titles_to_map[i:i + batch_size]
         batch_num = i // batch_size + 1
-        logger.info(f"  Batch {batch_num}/{total_batches} ({len(batch)} titles)...")
 
-        results = map_titles_batch(client, batch, taxonomy_ref, model, use_structured_output)
+        results, usage_stats = map_titles_batch(client, batch, taxonomy_ref, model, use_structured_output)
         all_results.extend(results)
+
+        # Accumulate usage stats
+        for key in total_usage:
+            total_usage[key] += usage_stats.get(key, 0)
+
+        cache_status = "CACHE HIT" if usage_stats.get("cache_read_input_tokens", 0) > 0 else "CACHE MISS"
+        logger.info(f"  Batch {batch_num}/{total_batches} ({len(batch)} titles) - {cache_status}")
 
     # Create results DataFrame
     df_results = pd.DataFrame(all_results)
 
     if df_results.empty:
         logger.warning("No results returned from API")
-        return pd.DataFrame()
+        return pd.DataFrame(), total_usage
 
     # Merge with original contacts to preserve other columns
     df_output = df_contacts[["contact_id", "job_title", "email", "contact_type"]].copy()
@@ -244,7 +295,7 @@ def process_contacts(
     # Fill missing values for contacts without job titles
     df_output["seniority"] = df_output["seniority"].fillna(-1)
 
-    return df_output
+    return df_output, total_usage
 
 
 def main():
@@ -257,8 +308,8 @@ def main():
     if not api_key:
         raise ValueError("Missing required parameter: #ANTHROPIC_API_KEY")
 
-    model = params.get("model", "claude-sonnet-4-5-20250514")
-    batch_size = int(params.get("batch_size", 50))
+    model = params.get("model", "claude-sonnet-4-5")
+    batch_size = int(params.get("batch_size", 100))
     use_structured_output = params.get("use_structured_output", True)
 
     logger.info("=== Job Title Mapping Component ===")
@@ -282,7 +333,7 @@ def main():
     logger.info(f"Loaded {len(df_contacts)} contacts and {len(df_taxonomy)} taxonomy entries")
 
     # Process contacts
-    df_output = process_contacts(
+    df_output, usage_stats = process_contacts(
         df_contacts,
         df_taxonomy,
         api_key=api_key,
@@ -302,6 +353,22 @@ def main():
 
     logger.info(f"Results saved: {len(df_output)} contacts mapped")
     logger.info(f"Output: {output_path}")
+
+    # Log token usage summary
+    logger.info("=== Token Usage Summary ===")
+    logger.info(f"Input tokens: {usage_stats['input_tokens']:,}")
+    logger.info(f"Output tokens: {usage_stats['output_tokens']:,}")
+    logger.info(f"Cache creation tokens: {usage_stats['cache_creation_input_tokens']:,}")
+    logger.info(f"Cache read tokens: {usage_stats['cache_read_input_tokens']:,}")
+    total_tokens = usage_stats['input_tokens'] + usage_stats['output_tokens']
+    logger.info(f"Total tokens: {total_tokens:,}")
+
+    # Calculate cache savings
+    cache_read = usage_stats['cache_read_input_tokens']
+    cache_creation = usage_stats['cache_creation_input_tokens']
+    if cache_read > 0:
+        cache_hit_rate = (cache_read / (cache_read + cache_creation)) * 100
+        logger.info(f"Cache hit rate: {cache_hit_rate:.1f}%")
 
 
 if __name__ == "__main__":

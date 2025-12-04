@@ -18,6 +18,7 @@ The component maps them to standardized titles:
 
 - **LLM-powered mapping** - Uses Claude's semantic understanding for accurate matching
 - **Structured outputs** - Guarantees valid JSON responses (beta feature for supported models)
+- **Prompt caching** - Caches taxonomy in system prompt for 90% input token savings
 - **Batch processing** - Processes multiple titles per API call for efficiency
 - **Configurable** - Model, batch size, and features configurable via component parameters
 
@@ -29,7 +30,7 @@ The component maps them to standardized titles:
 |-----------|----------|---------|-------------|
 | `#ANTHROPIC_API_KEY` | Yes | - | Anthropic API key (encrypted) |
 | `model` | No | `claude-sonnet-4-5` | Claude model to use |
-| `batch_size` | No | `50` | Titles processed per API call |
+| `batch_size` | No | `100` | Titles processed per API call |
 | `use_structured_output` | No | `true` | Use structured outputs beta feature |
 
 ### Supported Models
@@ -76,16 +77,18 @@ The component maps them to standardized titles:
 ## How It Works
 
 1. Loads contacts and taxonomy from input tables
-2. Batches job titles (default: 50 per batch)
-3. Sends each batch to Claude with the full taxonomy as context
-4. Claude returns structured JSON with best-match mappings
-5. Results are merged and written to output table
+2. Creates system prompt with taxonomy (cached after first call)
+3. Batches job titles (default: 100 per batch)
+4. Sends each batch to Claude - taxonomy is cached, only titles are sent fresh
+5. Claude returns structured JSON with best-match mappings
+6. Results are merged and written to output table
 
 ## Cost Estimation
 
-With default settings (Sonnet 4.5, batch size 50):
-- ~$0.01-0.02 per batch of 50 titles
-- ~$0.20-0.40 per 1,000 titles
+With default settings (Sonnet 4.5, batch size 100, prompt caching enabled):
+- First batch: ~$0.02 (cache creation)
+- Subsequent batches: ~$0.005 (90% savings from cache hits)
+- **~$8-12 per 143,000 titles** (vs ~$57 without caching)
 
 ## Local Development
 
