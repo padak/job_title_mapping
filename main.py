@@ -327,7 +327,7 @@ def main():
         raise FileNotFoundError(f"Taxonomy file not found: {taxonomy_path}")
 
     # Load data
-    df_contacts = pd.read_csv(contacts_path)
+    df_contacts = pd.read_csv(contacts_path, low_memory=False)
     df_taxonomy = pd.read_csv(taxonomy_path)
 
     logger.info(f"Loaded {len(df_contacts)} contacts and {len(df_taxonomy)} taxonomy entries")
