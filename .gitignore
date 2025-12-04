@@ -1,0 +1,12 @@
+# Environment
+.env
+.venv/
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Output data (optional - uncomment if you don't want to commit results)
+# data/contact_mapped_llm.csv
